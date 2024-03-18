@@ -1,11 +1,337 @@
 ---
-title: "GG606_final"
+title: "GG606: Analytics Demo"
 author: "Julia Kozak"
-date: "2024-03-18"
-output: html_document
+date: "April 04, 2024"
+output:
+  html_document:
+    toc: true
+    toc_depth: 6
+    toc_float:
+      collapsed: false
+      smooth_scroll: false
+    highlight: kate
+    number_sections: false
+    keep_md: true
+  pdf_document:
+    toc: true
+    toc_depth: '6'
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
+
+**This assignment follows two roads within each section: the easy way and the hard way. This is because I am not sure what the authors did exactly to receive these results. The 'easy' way follows supplementary data provided outside of the data frame download, which retrieves the results the authors received post LME modeling. The hard way is explicitly taking the raw data `.csv` file and attempting to recreate their LME model. However, because portions of crucial information is missing from the process, guesstimate work was conducted in an attempt to achieve the same final results.**
+
+________________________________________________________________________________
+## 1. Loading Things: \
+
+#### 1.1: Loading Packages \
+Load in any and all packages required to manipulate, transform, and illustrate the data given.
+```{r Loading Packages, include=TRUE}
+#Functional:
+library(tidyverse)     #Package to process our data, stylized formation
+library(magrittr)      #Package to help coding sequencing 
+library(janitor)       #Package for 'clean_names()' function
+library(Matrix)
+library(lme4)          #Package to plot mixed linear and non-linear models
+library(car)           #Package to ru ANOVA w/ random variables
+#library(AICcmodavg)    #Package to determine se error
+#Aesthetics:
+library(ggplot2)       #Package to generate plotted data
+library(patchwork)     #Package for extensive plotted data configuration 
+library(ggthemes)      #Package for extra themes, scales, and geoms for plotted data
+library(RColorBrewer)  #Package to colour plots
+
+library(here)          #Package to set working directory via `.Rproj`
+getwd()                #Function to affirm working directory 
+```
+
+#### 1.2: Loading Data \
+The only data provided in `.csv` format from the borealis Dryad data set interface associated with this paper is titled here as, `01_pond_data_given.` It has not been altered since download and needs to be cleaned. \
+
+The article made frequent mention of data in a supplementary file which was a Word document that contained the following data table loaded here as, `2_suppl_data_given_totals.` It is the total biomass of each study counterpart (consumer, producer, carbon flux) against each treatment type (control, nutrient addition only, addition of a zooplanktivorous predator, 3C increase in temperature, nutrient + fish addition, nutrient + warming addition, predator + warming addition, and nutrient + predator + warming addition). At the time I wasn't sure if it was needed, but it was loaded just in case. It is known as the 'easy way' here throughout this assignment. 
+
+```{r Loading Data, include=TRUE}
+pond_data_raw=read.csv(here("01_rawdata", "1_pond_data_given.csv"))   #load in datasets
+treatment_totals=read.csv(here("01_rawdata", "2_suppl_data_given_totals.csv"))  
+```
+
+________________________________________________________________________________
+## 2. Manipulating Data: \
+
+We do not know if the values were (presumably) added together first then log transformed. Likewise, we seem to know very little of what values the authors actually used for any of these analyses... means, sums, raw biomass, or log transformed- any of these combinations. Extremely frustrating. 
+- *Side note: I actually did figure out what the authors ended up doing (for the most part). I was just not working the right way, instead of (obviously) working backwards, I was trying to work forwards like them, except I have to recreate things and didn't have enough information to work in this direction.*
+
+We know that based on the Table. 1 summary statistics table that the F-value is F1,32 which should be broken down as such:
+- Ambient vs. warmed are two parameters so when when one degree of freedom is subtracted it equals one (F1,x)
+- Forty tanks in total then subtracting total number of tested parameters (eight) equals thirty-two so F1,32
+
+So, I figure that it must be a statistical difference test in between the ambient and warmed if the F-value of 1,32 is only for 40 samples... we also know that these values are supposedly from the linear mixed-effects models (so we need to compute it this way first), and based on the figures the data for consumers/primary has been naturally log transformed. This is a little confusing, but another clue to try out (note: the author's reference this similar or exact study conducted in another paper by them, in which the ***biomass data was log-e transformed prior to LME regression analysis...***) 
+- The author's illustrate CO2 flux as a mean with no log transformations, total consumer and total primary biomass are averaged based on every single treatment condition (eight), then naturally log transformed. I had assumed that they used these values in the LME, however, this is incorrect. While we can see that they used the data in these forms to illustrate the within their Figure 1 plots, they actually used the raw data within the LME model a.) to generate these mean + se values (this is where the easy way summary table comes from), and b.) we know that date and mesocosms were used as random factors within the LME, thus, they must be included within the original LME. 
+
+
+
+### Easy Way:
+Since I rendered and compared the values in excel and they (mostly) match this supplementary table provided, I will recreate the original plot using this data first. 
+*Side note: you should come back and see if you can get them to match in R too, but I am avoiding this because it is such an absolute pain (function creation).*
+
+```{r Generate Easy Data table 1, include=TRUE}
+#Note: the values in this data table are MEAN values already computed!!!!
+treatment_totals=treatment_totals %>%      #overwrite previous dataframe
+  clean_names() %>%                        #clean col names
+  rename(consumer_biomass=consumer_biomass_g_c_m_2, #rename them, bc long and annoying
+         primary_biomass=primary_biomass_g_c_m_2, 
+         co2_flux=co2_flux_mg_c_m_2_d_1) %>%
+#Move se in brackets into their own col. The value "0.22" had a space behind it afterwards [unique(treatment_totals$consumer_biomass)] which is why log transformations didn't work + registering as character class types idk why
+ mutate(se_consumer_biomass=str_extract(consumer_biomass, "\\(.*?\\)"),
+        consumer_biomass=str_remove(consumer_biomass, "\\s*\\(.*?\\)")) %>%
+ mutate(se_primary_biomass=str_extract(primary_biomass, "\\(.*?\\)"),
+        primary_biomass=str_remove(primary_biomass, "\\s*\\(.*?\\)")) %>%
+ mutate(se_co2=str_extract(co2_flux, "\\(.*?\\)"),
+        co2_flux=str_remove(co2_flux, "\\s*\\(.*?\\)")) %>%
+#Drop white space after last number
+ mutate(consumer_biomass=str_trim(consumer_biomass)) %>% 
+#Remove the brackets from the newly created standard error columns we just made:
+ mutate(se_consumer_biomass=str_replace_all(se_consumer_biomass, "\\(|\\)", "")) %>%
+ mutate(se_primary_biomass=str_replace_all(se_primary_biomass, "\\(|\\)", "")) %>%
+ mutate(se_co2=str_replace_all(se_co2, "\\(|\\)", "")) %>%
+#Make the three cols into numeric class types for when we need to compute them:
+ mutate(consumer_biomass=as.numeric(consumer_biomass)) %>% 
+ mutate(primary_biomass=as.numeric(primary_biomass)) %>%
+ mutate(co2_flux=as.numeric(co2_flux)) %>%
+#Log-e transform only two biomass cols:
+ mutate(consumer_log=log(consumer_biomass)) %>%  #new cols for log-e, not co2 flux tho
+ mutate(primary_log=log(primary_biomass)) %>%
+#I need to be able to plot stuff based on if there is a predator or warming present, so we need to make something that can define that. Here, a `case_when` is easiest because there are only 4 specific circumstances. Otherwise, use an`if_else` for `str_detect`
+ mutate(predator= case_when(
+   treatment %in% c("P", "NP", "PW", "NPW")~"Predator Present",
+   TRUE~"Predator Absent")) %>%
+ mutate(temperature= case_when(
+   treatment %in% c("W", "NW", "PW", "NPW")~"Warmed",
+   TRUE~"Ambient")) %>%
+ mutate(nutrient_case= case_when(
+   treatment %in% c("N", "NP", "NW", "NPW")~"Nutrients",
+   TRUE~"No Nutrients")) 
+```
+
+Personally, the long list of cleaning the `treatment_totals` data set was becoming a little long, and in order to avoid wiping my environment clean to keep running/checking changes I just started a new code chunk. 
+
+```{r Generate Easy Data table 2, include=TRUE}
+#Purpose of this chunk to to make the data frame long...  but not smartly? Just kidding, smartly. Come back and shove co2_flux if gridding both plots doesn't work. 
+treatment_totals_long=treatment_totals %>%
+  pivot_longer(cols=c(consumer_biomass, primary_biomass), 
+               names_to="biomass", 
+               values_to="biomass_value") %>%
+  pivot_longer(cols=c(consumer_log, primary_log), 
+               names_to="biomass_log", 
+               values_to="biomass_log_value") %>%
+  pivot_longer(cols=c(se_consumer_biomass, se_primary_biomass), 
+               names_to="standard_error", 
+               values_to="standard_error_value") %>%
+  mutate(standard_error_value=as.numeric(standard_error_value))
+```
+
+### Hard Way:
+
+We need to be able to use the raw data given, but it is not clearly identified by treatment type, which is a variable we will later need to run our linear regressions or plots by. 
+- Issue 01: While the tank names are provided, we don't know with exact certainty which tanks were delegated as controls, and they have been randomly assigned. Here, we assume that tanks with no nutrient, fish, or warming are controls. We are basing the different treatment types listed above based on these column parameters (ex. no nutrients, no fish, but warming = 'W'). 
+
+```{r Quick Maths 1}
+#Wanted to quickly see if the number of treatments based on the the column conditions would be able to return a.) the correct number of treatment combinations, b.) if there were the right number of tanks in total (40 per sampling period x 2 = 80n total) and then c.) confirm that there should be 5 tanks per treatment type per sample period
+pond_data_raw %>%
+  group_by(Nutrients, Fish, Warming) %>%
+  count()
+
+######Returned in this order:#######
+#control (C)
+#3C increase in temperature (W) 
+#addition of a zooplanktivorous predator (P)
+#predator + warming addition (PW)
+#nutrient addition only (N)
+#nutrient + warming addition (NW)
+#nutrient + fish addition (NP)
+#nutrient + predator + warming addition (NPW) 
+```
+
+A function was developed in order to more quickly determine each tank treatment type based on the columns 'nutrients,' 'fish,' and 'warming' then enter in those results according to denoted treatment type. 
+
+```{r Develop a Function to Determine Treatment Type, inclue=TRUE}
+get_treatment=function(nutrients, fish, warming) 
+{ #Control (C):
+  if (nutrients=="no" & fish=="no" & warming=="no") { 
+    return("C")              
+  #Warming (W):
+  } else if (nutrients=="no" & fish=="no" & warming=="yes") {
+    return("W") 
+  #Predator only (P): 
+  } else if (nutrients=="no" & fish=="yes" & warming=="no") {
+    return("P") 
+  #Predator + warming (PW): 
+  } else if (nutrients=="no" & fish=="yes" & warming=="yes") {
+    return("P:W") 
+  #Nutrient only (N): 
+  } else if (nutrients=="yes" & fish=="no" & warming=="no") {
+    return("N")  
+  #Nutrient + warming (NW): 
+  } else if (nutrients=="yes" & fish=="no" & warming=="yes") {
+    return("N:W") 
+  #Nutrient + Predator (NP): 
+  } else if (nutrients=="yes" & fish=="yes" & warming=="no") {
+    return("N:P")    
+  #Nutrient + Predator + warming (NPW): 
+  } else if (nutrients=="yes" & fish=="yes" & warming=="yes") {
+    return("N:P:W")    
+  #Check to see if any outliers and that function worked:
+  } else {
+    return(NA) #when ran function on df did not return any, seems to have worked
+  }
+}
+```
+
+```{r Generate Hard Data Table 1, include=TRUE}
+pond_data_clean=pond_data_raw %>%                     #create new callable object
+  clean_names() %>%                                   #edit col heading titles
+  rename(consumer_biomass=total_consumer_g_c_m2,      #rename bc long/annoying
+         primary_biomass=total_primary_g_c_m2, 
+         co2_flux=co2_flux_mg_c_m2_d_1)  %>%
+#create new columns from function based on treatment type:
+ rowwise() %>%
+ mutate(treatment=get_treatment(nutrients, fish, warming)) %>% 
+ ungroup()
+#Visually checked but also ran a quick count by treatment type and returned the same values (n=10; n=5 per sample period) for 8 treatment types. 
+```
+
+
+
+
+
+
+________________________________________________________________________________
+## 3. Statistical Analyses on Data: \
+
+```{r Developing Linear Models, include=TRUE}
+mixed_model_CB=lmer(total_consumer_biomass~
+                      treatment + (1|tank) + (1|date), data=pond_data_clean)
+mixed_model_PB=lmer(total_primary_biomass~
+                      treatment + (1|tank) + (1|date), data=pond_data_clean)
+mixed_model_CF=lmer(co2_flux~
+                      treatment + (1|tank) + (1|date), data=pond_data_clean)
+#error message here is from the first and last mixed models (??) and indicates that results are too eerily similar (I think)
+
+#Create mixed model summary as an actual object within the environment 
+summary_mm_CB=summary(mixed_model_CB)
+summary_mm_PB=summary(mixed_model_PB)
+summary_mm_CF=summary(mixed_model_CF)
+
+print(summary_mm_CB)
+print(summary_mm_PB)
+print(summary_mm_CF)
+```
+
+
+
+
+
+
+
+
+
+
+```{r}
+cb_estimates <- summary_mm_CB$coefficients[, "Estimate"]
+cb_pvalues <- summary_mm_CB$coefficients[, "Pr(>|t|)"]
+
+# Extract estimates and p-values for primary producer biomass
+pb_estimates <- summary_mm_PB$coefficients[, "Estimate"]
+pb_pvalues <- summary_mm_PB$coefficients[, "Pr(>|t|)"]
+
+# Extract estimates and p-values for CO2 flux
+cf_estimates <- summary_mm_CF$coefficients[, "Estimate"]
+cf_pvalues <- summary_mm_CF$coefficients[, "Pr(>|t|)"]
+
+# Create a data frame to store the results
+results <- data.frame(
+  Consumer_Biomass_Estimate = cb_estimates,
+  Consumer_Biomass_P_Value = cb_pvalues,
+  Primary_Producer_Biomass_Estimate = pb_estimates,
+  Primary_Producer_Biomass_P_Value = pb_pvalues,
+  CO2_Flux_Estimate = cf_estimates,
+  CO2_Flux_P_Value = cf_pvalues
+)
+
+# Add treatment labels
+results$treatment <- rownames(results)
+
+# Reorder columns
+results <- results[, c("treatment", "Consumer_Biomass_Estimate", "Consumer_Biomass_P_Value",
+                       "Primary_Producer_Biomass_Estimate", "Primary_Producer_Biomass_P_Value",
+                       "CO2_Flux_Estimate", "CO2_Flux_P_Value")]
+
+# Print the table
+print(results)
+```
+
+```{r}
+treatment_levels <- c("treatmentN", "treatmentNP", "treatmentNPW", "treatmentNW", "treatmentP", "treatmentPW", "treatmentW")
+
+# Extract the summary of coefficients
+coefficients_summary <- summary(mixed_model_CB)$coefficients
+
+# Subset coefficients table using treatment levels
+treatment_coefficients <- coefficients_summary[treatment_levels, ]
+
+# Extract F-value and p-value
+F_value_CB <- treatment_coefficients[, "t value"]
+p_value_CB <- treatment_coefficients[, "Pr(>|t|)"]
+
+# Print or use the extracted values as needed
+print(F_value_CB)
+print(p_value_CB)
+```
+
+```{r Extract Linear Model Data, include=TRUE}
+anova_CB=anova(mixed_model_CB)
+anova_PB=anova(mixed_model_PB)
+anova_CF=anova(mixed_model_CF)
+
+#Extract both the F-values and p-value from model summary (compute p-value). I looked into creating a function to do this for us, but I was too scared of messing it up since I'm less confident at determining errors with significant values. 
+```
+```{r}
+summary_mm_CB$coefficients
+```
+
+
+
+
+
+________________________________________________________________________________
+## 4. Plotting Data: \
+
+```{r Easy Way Plot 1}
+easy_biomass_plots=treatment_totals_long %>%
+#Generate the plot:  
+  ggplot() +
+  facet_grid(biomass_log~predator, scales="free", space="free") +
+  geom_point(aes(x=temperature, y=biomass_log_value, shape=factor(nutrient_case))) +
+#Plot aesthetics:
+  theme_minimal() +  
+  theme(legend.position="bottom")
+#Generate labels:    
+#  labs(x=NULL, y="% of Degree Holders") 
+ labs(y="New Y-Axis Title") 
+print(easy_biomass_plots)
+```
+
+
+
+
+
+
+
+
+
+
+
+
 
