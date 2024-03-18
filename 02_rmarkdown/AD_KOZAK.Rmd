@@ -1,0 +1,11 @@
+---
+title: "GG606_final"
+author: "Julia Kozak"
+date: "2024-03-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
