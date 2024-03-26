@@ -9,22 +9,149 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## R Markdown
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+Rough code incorrectly attempting to quickly get new SE values (need total raw data in order to compute the sample standard deviation). But thought process saved here:
+```{r Generate Easy Data table 2 SE, include=TRUE}
+#Add in: something is whacky with the given SE values, so I am adding in a new col with MY OWN calculated 95% CI SE values based on the mean values given, which have proven to be fine when I computed them in excel (I will do these again in R) 
+n=10 #there are ten biomass sample values (5/5) per treatment type in each mean
+t_value=qt(0.975, df=n-1)  #known t-value
 
-```{r cars}
-summary(cars)
+#do NOT add this to df, just use it to run these functions only way I know
+SE_consumer_biomass=sd(treatment_totals$consumer_biomass)/sqrt(n)
+SE_primary_biomass=sd(treatment_totals$primary_biomass)/sqrt(n)
+
+treatment_totals=treatment_totals %>%
+  mutate(                   #authors say that CI is +/- but just to double check
+    CI_consumer_biomass_lower=consumer_biomass-t_value*SE_consumer_biomass,
+    CI_consumer_biomass_upper=consumer_biomass+t_value*SE_consumer_biomass,
+    CI_primary_biomass_lower=primary_biomass-t_value*SE_primary_biomass,
+    CI_primary_biomass_upper=primary_biomass+t_value*SE_primary_biomass)
 ```
 
-## Including Plots
-
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
+```{r}
+treatment_totals_SE=treatment_totals %>%
+  select(treatment, consumer_biomass, primary_biomass, se_consumer_biomass, 
+         CI_consumer_biomass_lower, CI_consumer_biomass_upper,se_primary_biomass,  
+         CI_primary_biomass_lower, CI_primary_biomass_upper) %>%
+  rowwise() %>%
+  mutate(se_consumer_se_mean=
+           sum((CI_consumer_biomass_lower+CI_consumer_biomass_upper)/2))
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+Code to assemble 'Easy' plots:
+```{r}
+easy_plots_ab3= 
+  ggarrange(easy_plota_con_nopreds, easy_plotb_con_preds) +
+  theme(panel.border = element_blank())
+easy_plots_ab3
+```
+
+```{r}
+grid.arrange(easy_plota_con_nopreds, easy_plotb_con_preds, ncol=2)
+```
+
+```{r Merge Easy Plots A-F, include=TRUE}
+easy_plot_af= 
+  (easy_plota_con_nopreds/easy_plotb_con_preds/
+   easy_plotc_prim_nopreds/easy_plotd_prim_preds/
+   easy_plote_co2_nopreds/easy_plotf_co2_preds) +
+
+plot_layout(ncol=2) +
+plot_layout(guides="collect") +
+plot_annotation(tag_levels=c('a','b','c','d','e','f')) &
+  theme(
+    legend.position="bottom",
+    legend.direction = "horizontal") 
+print(easy_plot_af)
+```
+
+Code to try and run a LME:
+
+#summarize an lme object - our solution
+tut <- summary(tutorial)
+tabl = tut$tTable 
+tabl 
+```{r Developing Linear Models, include=TRUE}
+mixed_model_CB=lmer(total_consumer_biomass~
+                      treatment + (1|tank) + (1|date), data=pond_data_clean)
+mixed_model_PB=lmer(total_primary_biomass~
+                      treatment + (1|tank) + (1|date), data=pond_data_clean)
+mixed_model_CF=lmer(co2_flux~
+                      treatment + (1|tank) + (1|date), data=pond_data_clean)
+#error message here is from the first and last mixed models (??) and indicates that results are too eerily similar (I think)
+
+#Create mixed model summary as an actual object within the environment 
+summary_mm_CB=summary(mixed_model_CB)
+summary_mm_PB=summary(mixed_model_PB)
+summary_mm_CF=summary(mixed_model_CF)
+
+print(summary_mm_CB)
+print(summary_mm_PB)
+print(summary_mm_CF)
+```
+
+
+```{r}
+cb_estimates <- summary_mm_CB$coefficients[, "Estimate"]
+cb_pvalues <- summary_mm_CB$coefficients[, "Pr(>|t|)"]
+
+# Extract estimates and p-values for primary producer biomass
+pb_estimates <- summary_mm_PB$coefficients[, "Estimate"]
+pb_pvalues <- summary_mm_PB$coefficients[, "Pr(>|t|)"]
+
+# Extract estimates and p-values for CO2 flux
+cf_estimates <- summary_mm_CF$coefficients[, "Estimate"]
+cf_pvalues <- summary_mm_CF$coefficients[, "Pr(>|t|)"]
+
+# Create a data frame to store the results
+results <- data.frame(
+  Consumer_Biomass_Estimate = cb_estimates,
+  Consumer_Biomass_P_Value = cb_pvalues,
+  Primary_Producer_Biomass_Estimate = pb_estimates,
+  Primary_Producer_Biomass_P_Value = pb_pvalues,
+  CO2_Flux_Estimate = cf_estimates,
+  CO2_Flux_P_Value = cf_pvalues
+)
+
+# Add treatment labels
+results$treatment <- rownames(results)
+
+# Reorder columns
+results <- results[, c("treatment", "Consumer_Biomass_Estimate", "Consumer_Biomass_P_Value",
+                       "Primary_Producer_Biomass_Estimate", "Primary_Producer_Biomass_P_Value",
+                       "CO2_Flux_Estimate", "CO2_Flux_P_Value")]
+
+# Print the table
+print(results)
+```
+
+```{r}
+treatment_levels <- c("treatmentN", "treatmentNP", "treatmentNPW", "treatmentNW", "treatmentP", "treatmentPW", "treatmentW")
+
+# Extract the summary of coefficients
+coefficients_summary <- summary(mixed_model_CB)$coefficients
+
+# Subset coefficients table using treatment levels
+treatment_coefficients <- coefficients_summary[treatment_levels, ]
+
+# Extract F-value and p-value
+F_value_CB <- treatment_coefficients[, "t value"]
+p_value_CB <- treatment_coefficients[, "Pr(>|t|)"]
+
+# Print or use the extracted values as needed
+print(F_value_CB)
+print(p_value_CB)
+```
+
+```{r Extract Linear Model Data, include=TRUE}
+anova_CB=anova(mixed_model_CB)
+anova_PB=anova(mixed_model_PB)
+anova_CF=anova(mixed_model_CF)
+
+#Extract both the F-values and p-value from model summary (compute p-value). I looked into creating a function to do this for us, but I was too scared of messing it up since I'm less confident at determining errors with significant values. 
+```
+```{r}
+summary_mm_CB$coefficients
+```

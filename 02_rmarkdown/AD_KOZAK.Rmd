@@ -33,10 +33,11 @@ Load in any and all packages required to manipulate, transform, and illustrate t
 library(tidyverse)     #Package to process our data, stylized formation
 library(magrittr)      #Package to help coding sequencing 
 library(janitor)       #Package for 'clean_names()' function
-library(Matrix)
+library(Matrix)        #Package to run `lme4` package functions
+library(nlme)          #Package for LME modeling, specific for `predict_se()`
 library(lme4)          #Package to plot mixed linear and non-linear models
-library(car)           #Package to ru ANOVA w/ random variables
-#library(AICcmodavg)    #Package to determine se error
+library(emmeans)       #Package for least squares means, needed for LME stats
+library(AICcmodavg)    #Package to determine SE error values
 #Aesthetics:
 library(ggplot2)       #Package to generate plotted data
 library(patchwork)     #Package for extensive plotted data configuration 
@@ -92,14 +93,16 @@ treatment_totals=treatment_totals %>%      #overwrite previous dataframe
         co2_flux=str_remove(co2_flux, "\\s*\\(.*?\\)")) %>%
 #Drop white space after last number
  mutate(consumer_biomass=str_trim(consumer_biomass)) %>% 
+ mutate(se_co2=str_trim(se_co2)) %>% 
 #Remove the brackets from the newly created standard error columns we just made:
  mutate(se_consumer_biomass=str_replace_all(se_consumer_biomass, "\\(|\\)", "")) %>%
  mutate(se_primary_biomass=str_replace_all(se_primary_biomass, "\\(|\\)", "")) %>%
  mutate(se_co2=str_replace_all(se_co2, "\\(|\\)", "")) %>%
-#Make the three cols into numeric class types for when we need to compute them:
+#Make the four cols into numeric class types for when we need to compute them:
  mutate(consumer_biomass=as.numeric(consumer_biomass)) %>% 
  mutate(primary_biomass=as.numeric(primary_biomass)) %>%
  mutate(co2_flux=as.numeric(co2_flux)) %>%
+ mutate(se_co2=as.numeric(se_co2)) %>%
 #Log-e transform only two biomass cols:
  mutate(consumer_log=log(consumer_biomass)) %>%  #new cols for log-e, not co2 flux tho
  mutate(primary_log=log(primary_biomass)) %>%
@@ -118,7 +121,7 @@ treatment_totals=treatment_totals %>%      #overwrite previous dataframe
 Personally, the long list of cleaning the `treatment_totals` data set was becoming a little long, and in order to avoid wiping my environment clean to keep running/checking changes I just started a new code chunk. 
 
 ```{r Generate Easy Data table 2, include=TRUE}
-#Purpose of this chunk to to make the data frame long...  but not smartly? Just kidding, smartly. Come back and shove co2_flux if gridding both plots doesn't work. 
+#Purpose of this chunk to to make the data frame long...  but not smartly? Just kidding, smartly. Come back and shove co2_flux if griding both plots doesn't work > did not do. 
 treatment_totals_long=treatment_totals %>%
   pivot_longer(cols=c(consumer_biomass, primary_biomass), 
                names_to="biomass", 
@@ -129,8 +132,10 @@ treatment_totals_long=treatment_totals %>%
   pivot_longer(cols=c(se_consumer_biomass, se_primary_biomass), 
                names_to="standard_error", 
                values_to="standard_error_value") %>%
-  mutate(standard_error_value=as.numeric(standard_error_value))
+  mutate(standard_error_value=as.numeric(standard_error_value)) %>%
+  mutate(standard_error_log=log(standard_error_value)) #checked and did correctly
 ```
+
 
 ### Hard Way:
 
@@ -202,105 +207,109 @@ pond_data_clean=pond_data_raw %>%                     #create new callable objec
 #Visually checked but also ran a quick count by treatment type and returned the same values (n=10; n=5 per sample period) for 8 treatment types. 
 ```
 
-
-
-
-
+```{r Generate Hard Data Table 2, include=TRUE}
+pond_data_clean_long=pond_data_clean %>%    #create new object
+  mutate(date=as.factor(date)) %>%          #random factors need to be factors
+  mutate(tank=as.factor(tank)) %>%          #random factors need to be factors
+  mutate(treatment=as.factor(treatment)) %>%#categorical needs to be a factor
+  group_by(treatment) %>%                   #group each mean values by 'treatment' type
+#Make raw biomass values into means per treatment type (total table values match)
+  mutate(consumer_bio_mean=round(sum(consumer_biomass)/10, 2)) %>% #10 samples per trt
+  mutate(primary_bio_mean=round(sum(primary_biomass)/10, 2)) %>%
+  mutate(co2_flux_mean=round(sum(co2_flux)/10, 2)) %>%
+  ungroup() %>%
+#Make raw biomass data into log transformed values ONLY, NOT carbon since we will not need it for the LME and it conveniently produces an error here *delete*
+  mutate(consumer_bio_log=round(log(consumer_biomass),2)) %>%
+  mutate(primary_bio_log=round(log(primary_biomass),2)) %>%
+#pivot this table longer so as to better filter for all the different LMEs:
+  pivot_longer(cols=c(consumer_biomass, primary_biomass, co2_flux), 
+               names_to="category", 
+               values_to="category_value") %>%
+  pivot_longer(cols=c(consumer_bio_mean, primary_bio_mean, co2_flux_mean), 
+               names_to="category_mean", 
+               values_to="category_mean_value") %>%
+  pivot_longer(cols=c(consumer_bio_log, primary_bio_log), 
+               names_to="biomass_log", 
+               values_to="biomass_log_values")
+```
 
 ________________________________________________________________________________
 ## 3. Statistical Analyses on Data: \
 
-```{r Developing Linear Models, include=TRUE}
-mixed_model_CB=lmer(total_consumer_biomass~
-                      treatment + (1|tank) + (1|date), data=pond_data_clean)
-mixed_model_PB=lmer(total_primary_biomass~
-                      treatment + (1|tank) + (1|date), data=pond_data_clean)
-mixed_model_CF=lmer(co2_flux~
-                      treatment + (1|tank) + (1|date), data=pond_data_clean)
-#error message here is from the first and last mixed models (??) and indicates that results are too eerily similar (I think)
+### Easy Way: \
+There isn't really an easy way to confirm the SE values provided from the total_treatment` summary table, since we require all of the consumer, primary, and CO2 raw data in order to compute these parameters. We also cannot run any modeling on this table since, again, we require the raw data values from all mesocosms. 
 
-#Create mixed model summary as an actual object within the environment 
-summary_mm_CB=summary(mixed_model_CB)
-summary_mm_PB=summary(mixed_model_PB)
-summary_mm_CF=summary(mixed_model_CF)
 
-print(summary_mm_CB)
-print(summary_mm_PB)
-print(summary_mm_CF)
+### Hard Way: \
+Here, this is the raw data (`pond_data_given`) that the authors used to render the mean and SE values within the `total_treatments` summary table. We must run the model and receive these similar values using this original data table. 
+To be frank, I was terrified of generating a function for a process which I was already hesitant and shakey to begin with, so I unfortunately brute forced all of these LME things. 
+
+
+allowing for nested random effects. The within-group errors are allowed to be correlated and/or have unequal variances.
+- did they compare with the control? thats where the F stat comes from? two groups (treatment N vs control) for consumers? 
+- i first tried running with just the raw biomass values, but previous paper said that they first log transformed biomass data prior to running the LME... fuck ugh
+- tbh i dont get how we can see if the fixed variable impacts the response because the fixed is a treatment, not changing over time (not even a number)
+- tank and date are in fact treated as if they are crossed because they are: two of the same tanks appear on the two same dates (a given factor appears in more than one level of another factor)
+- upper ci and lower ci are different: what did they actually do? means? then apply to both? wher are these ci intervals, and what test__> lme predict
+=anova consumer, primary, co2 somehow? 
+
+lmer(testScore ~ bodyLength2 + (1|mountainRange) + (1|site), data = dragons) 
+tank 
+```{r Developing Linear Models: Consumers, include=TRUE}
+#All LME models (treatment types) on consumer biomass (C,N,P,W,N:P,W:N,W:P,W:P:N) currently on raw biomass data.
+
+#MODELING: N on raw consumer biomass ------------------------------------------
+model_CB_N=pond_data_clean_long %>%               #df for consumer data, N only
+  select(-year, -nutrients, -fish, -warming) %>%
+  filter(category=="consumer_biomass") %>%
+  filter(category_mean=="consumer_bio_mean") %>%
+  filter(biomass_log=="consumer_bio_log") %>%
+  filter(treatment=="N")
+#fixed=treatment (N) // response=consumers // randoms=date+tank
+#order: what we wanna know (response)~what should impact this (depend) + randoms
+#here `category_value` can be entered because we specifically filtered it above
+#model_CBraw_N=lmer(category_value~treatment+(1|tank)+(1|date), data=model_CB_N)
+
+
+model_CB=pond_data_clean_long %>%               #df for consumer data, N only
+  select(-year, -nutrients, -fish, -warming) %>%
+  filter(category=="consumer_biomass") %>%
+  filter(category_mean=="consumer_bio_mean") %>%
+  filter(biomass_log=="consumer_bio_log")
+
+model_CBraw=lmer(category_value~treatment+(1|tank)+(1|date), data=model_CB)
+model_CBlog=lmer(biomass_log_values~treatment+(1|tank)+(1|date), data=model_CB)
+```
+
+```{r}
+emmeans_model_CB=emmeans(model_CBraw, specs = pairwise ~ treatment)
+summary(emmeans_model_CB)
+```
+```{r}
+model_CB_lme=as.lme(model_CBraw)
+se_predictions=predictSE.lme(object = model_CB_lme)
+print(se_predictions)
 ```
 
 
-
-
-
-
-
+```{r}
+model_CBraw_summary=summary(model_CBraw)
+summary(model_CBraw)
+#summary(model_CBlog)
+anova(model_CBraw)
+```
 
 
 
 ```{r}
-cb_estimates <- summary_mm_CB$coefficients[, "Estimate"]
-cb_pvalues <- summary_mm_CB$coefficients[, "Pr(>|t|)"]
-
-# Extract estimates and p-values for primary producer biomass
-pb_estimates <- summary_mm_PB$coefficients[, "Estimate"]
-pb_pvalues <- summary_mm_PB$coefficients[, "Pr(>|t|)"]
-
-# Extract estimates and p-values for CO2 flux
-cf_estimates <- summary_mm_CF$coefficients[, "Estimate"]
-cf_pvalues <- summary_mm_CF$coefficients[, "Pr(>|t|)"]
-
-# Create a data frame to store the results
-results <- data.frame(
-  Consumer_Biomass_Estimate = cb_estimates,
-  Consumer_Biomass_P_Value = cb_pvalues,
-  Primary_Producer_Biomass_Estimate = pb_estimates,
-  Primary_Producer_Biomass_P_Value = pb_pvalues,
-  CO2_Flux_Estimate = cf_estimates,
-  CO2_Flux_P_Value = cf_pvalues
-)
-
-# Add treatment labels
-results$treatment <- rownames(results)
-
-# Reorder columns
-results <- results[, c("treatment", "Consumer_Biomass_Estimate", "Consumer_Biomass_P_Value",
-                       "Primary_Producer_Biomass_Estimate", "Primary_Producer_Biomass_P_Value",
-                       "CO2_Flux_Estimate", "CO2_Flux_P_Value")]
-
-# Print the table
-print(results)
+model_CB %>%
+  print()
 ```
 
-```{r}
-treatment_levels <- c("treatmentN", "treatmentNP", "treatmentNPW", "treatmentNW", "treatmentP", "treatmentPW", "treatmentW")
 
-# Extract the summary of coefficients
-coefficients_summary <- summary(mixed_model_CB)$coefficients
+lmerTest
 
-# Subset coefficients table using treatment levels
-treatment_coefficients <- coefficients_summary[treatment_levels, ]
-
-# Extract F-value and p-value
-F_value_CB <- treatment_coefficients[, "t value"]
-p_value_CB <- treatment_coefficients[, "Pr(>|t|)"]
-
-# Print or use the extracted values as needed
-print(F_value_CB)
-print(p_value_CB)
-```
-
-```{r Extract Linear Model Data, include=TRUE}
-anova_CB=anova(mixed_model_CB)
-anova_PB=anova(mixed_model_PB)
-anova_CF=anova(mixed_model_CF)
-
-#Extract both the F-values and p-value from model summary (compute p-value). I looked into creating a function to do this for us, but I was too scared of messing it up since I'm less confident at determining errors with significant values. 
-```
-```{r}
-summary_mm_CB$coefficients
-```
-
+                     
 
 
 
@@ -308,28 +317,303 @@ summary_mm_CB$coefficients
 ________________________________________________________________________________
 ## 4. Plotting Data: \
 
-```{r Easy Way Plot 1}
+### Easy Way: \
+I first attempted to plot the biomass data straight into a `facet_grid` which worked, but the all the different plot axes seemed very close together, and I was not able to make them as large as I had wished. The thought here was to plot logged biomass data and carbon flux data, then plop the former on-top of the latter later down the road.
+However, I then just plotted each figure separately based on filtering conditions and merged them all together. \
+
+```{r Easy Way Plot 1, include=FALSE}
 easy_biomass_plots=treatment_totals_long %>%
 #Generate the plot:  
   ggplot() +
-  facet_grid(biomass_log~predator, scales="free", space="free") +
+  facet_grid(biomass_log~predator, space="free") +
   geom_point(aes(x=temperature, y=biomass_log_value, shape=factor(nutrient_case))) +
 #Plot aesthetics:
   theme_minimal() +  
   theme(legend.position="bottom")
-#Generate labels:    
-#  labs(x=NULL, y="% of Degree Holders") 
- labs(y="New Y-Axis Title") 
+  labs(y="New Y-Axis Title") 
 print(easy_biomass_plots)
 ```
 
 
+- Keep grid lines because even though lots of small confusing plots that are harder to read, they are small, so adding so many lines makes things more cluttered?
+- error bars and maybe points seem to not quite be lining up with given plots, checking for that error. Ok so, I think that the authors are making the points too large which is making things look slightly off (log values are so small), since I am literally using the exact values that they GAVE as mean then logged values. For the most part these values match the ones I computed in excel (constant rounding not off by more than 0.05). Double checked that R computed log right (again) and that values match. They do, based on logging the means provided by authors.   
+- same with se bars. using the values they gave for means and se bars for those means. logging the se bars... doesn't make any sense and also gives us WILD error bars (much larger than those used by the authors). wish i could say i was intelligent enough that this was obvious and easy. so, mean se bar logged because scale of data for consistency SHOULD BE USED HERE! but i did NOT to match paper aesthetics!! changing the y axis to 05->0 like in the paper actually cuts off these error bars. so they had to stay smaller.
+- ok so recomputing the se values with a 95% ci based on the mean values (should be fine because we need mean anyways) 
+- did these fuckers just take raw mean values and throw it on a log scale?????? no.. based on what i read i dont think you can directly chage a scale if or when data will become negative. so they mustve converted it earlier(?) they gave the data but they are making me WORK for it christ 
+kay wait- thought/realization: the mean +/- se given to us in the summary table is for BOTH warm and ambient treatments???????? but if were plotting them seperately then we need the respective data for each treatment type BUT also for everything we keep breaking things down for. 
 
 
+```{r Generating Figures: Easy Way Plot A, include=FALSE}
+#Plot a: i.) consumer LOG biomass ii.) no predators
+easy_plota_con_nopreds=treatment_totals_long %>% #checked this df combo just to be safe 
+  filter(biomass=="consumer_biomass") %>%    
+  filter(biomass_log=="consumer_log") %>%
+  filter(standard_error=="se_consumer_biomass") %>%
+  filter(predator=="Predator Absent") %>%
+#Generate the plot:  
+  ggplot() +
+  geom_point(aes(x=temperature, y=biomass_log_value, shape=factor(nutrient_case)), 
+             size=3) +                        #plot points based on strict filters above
+  geom_errorbar(aes(x=temperature, y=biomass_log_value,  #SE based on grouped conditions
+                ymin=biomass_log_value-standard_error_value, 
+                ymax=biomass_log_value+standard_error_value,
+                group=interaction(treatment, nutrient_case)), width=0.03, guide=NULL) +
+  geom_line(aes(x=temperature, y=biomass_log_value, group=factor(nutrient_case), 
+                linetype=factor(nutrient_case)), colour="black", guide=NULL) +
+  #ylim(-5,0) +                              
+  scale_y_continuous(breaks=seq(-5, 0, by=1), #define y-axis line segments
+                   limits=c(-5, 0)) +         #define y-axis and                     
+  scale_shape_manual(name="",                 #remove line legend title
+                    values=c(19, 1),          #only way to keep lines w/o legend
+                    labels=c("No Nutrients", "Nutrients")) +
+#Plot aesthetics:
+  theme_minimal() +                           #theme_bw() couldn't alter outer grid
+  theme(plot.background=element_rect(fill="white"),   #make figure background white
+        panel.grid.major=element_line(colour="white"),#make figure grid lines white
+        axis.line.x=element_line(colour="black"),     #set outer x-axis line colour  
+        axis.line.y=element_line(colour="black")) +   #set outer y-axis line colour 
+#  theme(plot.margin = margin(0.75, 2, 0, 0.5, "cm")) +#T, R, B, L (plot margins)
+  theme(legend.position="bottom") +                   #set legend to the bottom
+  guides(linetype=FALSE) +                            #get rid of line legend omfg
+#Generate labels:    
+  labs(x=NULL,                                        #no x-axis label here
+       y=expression(atop(log[e]~"consumer biomass"~(g~C~m^{-2})))) +
+        #formulate y-axis label expression, add the common back where you want the break
+  theme(axis.title.y=element_text(vjust=-5)) +       #move y-axis title closer right
+  labs(title="Predator Absent") +                    #only add plot title 1/2
+  theme(plot.title=element_text(hjust=.50))          
 
+print(easy_plota_con_nopreds)
+```
 
+```{r Generating Figures: Easy Way Plot B, include=FALSE}
+#Plot b: i.) consumer LOG biomass ii.) predators 
+easy_plotb_con_preds=treatment_totals_long %>% #checked this df combo just to be safe 
+  filter(biomass=="consumer_biomass") %>%    
+  filter(biomass_log=="consumer_log") %>%
+  filter(standard_error=="se_consumer_biomass") %>%
+  filter(predator=="Predator Present") %>%                             #changed 
+#Generate the plot:  
+  ggplot() +
+  geom_point(aes(x=temperature, y=biomass_log_value, shape=factor(nutrient_case)), 
+             size=3) +                        #plot points based on strict filters above
+  geom_errorbar(aes(x=temperature, y=biomass_log_value,  #SE based on grouped conditions
+                ymin=biomass_log_value-standard_error_value, 
+                ymax=biomass_log_value+standard_error_value,
+                group=interaction(treatment, nutrient_case)), width=0.03, guide=NULL) +
+  geom_line(aes(x=temperature, y=biomass_log_value, group=factor(nutrient_case), 
+                linetype=factor(nutrient_case)), colour="black", guide=NULL) +
+  #ylim(-5,0) +                              
+  scale_y_continuous(breaks=seq(-5, 0, by=1), #define y-axis line segments
+                   limits=c(-5, 0)) +         #define y-axis and                     
+  scale_shape_manual(name="",                 #remove line legend title
+                    values=c(19, 1),          #only way to keep lines w/o legend
+                    labels=c("No Nutrients", "Nutrients")) +
+#Plot aesthetics:
+  theme_minimal() +                           #theme_bw() couldn't alter outer grid
+  theme(plot.background=element_rect(fill="white"),   #make figure background white
+        panel.grid.major=element_line(colour="white"),#make figure grid lines white
+        axis.line.x=element_line(colour="black"),     #set outer x-axis line colour  
+        axis.line.y=element_line(colour="black")) +   #set outer y-axis line colour 
+#  theme(plot.margin = margin(0.75, 2, 0, 0.5, "cm")) +#T, R, B, L (plot margins)
+  theme(legend.position="bottom") +                   #set legend to the bottom
+  guides(linetype=FALSE) +                            #get rid of line legend omfg
+#Generate labels:    
+  labs(x=NULL, y=NULL) +                              #no x-axis label here
+#     y=expression(atop(log[e]~"consumer",            #formulate y-axis label expression
+#                         "biomass"~(g~C~m^{-2}))))
+  labs(title="Predator Present") +                    #only add plot title 2/2
+  theme(plot.title=element_text(hjust=.50))          
 
+print(easy_plotb_con_preds)
+```
 
+```{r Generating Figures: Easy Way Plot C, include=FALSE}
+#Plot c: i.) primary LOG biomass ii.) no predators 
+easy_plotc_prim_nopreds=treatment_totals_long %>%  
+  filter(biomass=="primary_biomass") %>%    
+  filter(biomass_log=="primary_log") %>%
+  filter(standard_error=="se_primary_biomass") %>%
+  filter(predator=="Predator Absent") %>%                             
+#Generate the plot:  
+  ggplot() +
+  geom_point(aes(x=temperature, y=biomass_log_value, shape=factor(nutrient_case)), 
+             size=3) +                        #plot points based on strict filters above
+  geom_errorbar(aes(x=temperature, y=biomass_log_value,  #SE based on grouped conditions
+                ymin=biomass_log_value-standard_error_value, 
+                ymax=biomass_log_value+standard_error_value,
+                group=interaction(treatment, nutrient_case)), width=0.03, guide=NULL) +
+  geom_line(aes(x=temperature, y=biomass_log_value, group=factor(nutrient_case), 
+                linetype=factor(nutrient_case)), colour="black", guide=NULL) +
+  #ylim(-5,0) +                              
+  scale_y_continuous(breaks=seq(-2, 3, by=1), #define y-axis line segments
+                   limits=c(-2, 3)) +         #define y-axis and                     
+  scale_shape_manual(name="",                 #remove line legend title
+                    values=c(19, 1),          #only way to keep lines w/o legend
+                    labels=c("No Nutrients", "Nutrients")) +
+#Plot aesthetics:
+  theme_minimal() +                           #theme_bw() couldn't alter outer grid
+  theme(plot.background=element_rect(fill="white"),   #make figure background white
+        panel.grid.major=element_line(colour="white"),#make figure grid lines white
+        axis.line.x=element_line(colour="black"),     #set outer x-axis line colour  
+        axis.line.y=element_line(colour="black")) +   #set outer y-axis line colour 
+#  theme(plot.margin = margin(0.75, 2, 0, 0.5, "cm")) +#T, R, B, L (plot margins)
+  theme(legend.position="bottom") +                   #set legend to the bottom
+  guides(linetype=FALSE) +                            #get rid of line legend omfg
+#Generate labels:    
+  labs(x=NULL,                                        #no x-axis label here
+       y=expression(atop(log[e]~"primary producer biomass"~(g~C~m^{-2})))) +
+     #formulate y-axis label expression, add the common back where you want the break
+  theme(axis.title.y=element_text(vjust =-5))         #move y-axis title closer right
+print(easy_plotc_prim_nopreds)
+```
+```{r Generating Figures: Easy Way Plot D, include=FALSE}
+#Plot d: i.) primary LOG biomass ii.) predators 
+easy_plotd_prim_preds=treatment_totals_long %>%  
+  filter(biomass=="primary_biomass") %>%    
+  filter(biomass_log=="primary_log") %>%
+  filter(standard_error=="se_primary_biomass") %>%
+  filter(predator=="Predator Present") %>%                             
+#Generate the plot:  
+  ggplot() +
+  geom_point(aes(x=temperature, y=biomass_log_value, shape=factor(nutrient_case)), 
+             size=3) +                        #plot points based on strict filters above
+  geom_errorbar(aes(x=temperature, y=biomass_log_value,  #SE based on grouped conditions
+                ymin=biomass_log_value-standard_error_value, 
+                ymax=biomass_log_value+standard_error_value,
+                group=interaction(treatment, nutrient_case)), width=0.03, guide=NULL) +
+  geom_line(aes(x=temperature, y=biomass_log_value, group=factor(nutrient_case), 
+                linetype=factor(nutrient_case)), colour="black", guide=NULL) +
+  #ylim(-5,0) +                              
+  scale_y_continuous(breaks=seq(-2, 3, by=1), #define y-axis line segments
+                   limits=c(-2, 3)) +         #define y-axis and                     
+  scale_shape_manual(name="",                 #remove line legend title
+                    values=c(19, 1),          #only way to keep lines w/o legend
+                    labels=c("No Nutrients", "Nutrients")) +
+#Plot aesthetics:
+  theme_minimal() +                           #theme_bw() couldn't alter outer grid
+  theme(plot.background=element_rect(fill="white"),   #make figure background white
+        panel.grid.major=element_line(colour="white"),#make figure grid lines white
+        axis.line.x=element_line(colour="black"),     #set outer x-axis line colour  
+        axis.line.y=element_line(colour="black")) +   #set outer y-axis line colour 
+#  theme(plot.margin = margin(0.75, 2, 0, 0.5, "cm")) +#T, R, B, L (plot margins)
+  theme(legend.position="bottom") +                   #set legend to the bottom
+  guides(linetype=FALSE) +                            #get rid of line legend omfg
+#Generate labels:    
+  labs(x=NULL, y=NULL)                                #no x-axis label here
+#      y=expression(atop(log[e]~"primary producer biomass"~(g~C~m^{-2}))))
+       #formulate y-axis label expression, add the common back where you want the break
+
+print(easy_plotd_prim_preds)
+#The standard SE value for ambient nutrient is 3.21 which is why it wont plot here..
+#there is something defintely wrong with SE values here and i dont know what
+```
+```{r Generating Figures: Easy Way Plot E, include=FALSE}
+#Plot e: i.) just c02 flux mean values ii.) no predators 
+easy_plote_co2_nopreds=treatment_totals_long %>%  
+  filter(predator=="Predator Absent") %>%                             
+#Generate the plot:  
+  ggplot() +
+  geom_point(aes(x=temperature, y=co2_flux, shape=factor(nutrient_case)), size=3) +     
+  geom_errorbar(aes(x=temperature, y=co2_flux,  #SE based on grouped conditions
+                ymin=co2_flux-se_co2, ymax=co2_flux+se_co2,
+                group=interaction(treatment, nutrient_case)), width=0.03, guide=NULL) +
+  geom_line(aes(x=temperature, y=co2_flux, group=factor(nutrient_case), 
+                linetype=factor(nutrient_case)), colour="black", guide=NULL) +
+  scale_y_continuous(breaks=seq(-100, 50, by=50), #define y-axis line segments
+                   limits=c(-110, 50)) +          #define y-axis                   
+  scale_shape_manual(name="",                     #remove line legend title
+                    values=c(19, 1),              #only way to keep lines w/o legend
+                    labels=c("No Nutrients", "Nutrients")) +
+  geom_hline(yintercept=0, linetype="longdash") + #add co2 influx/efflux line
+#Plot aesthetics:
+  theme_minimal() +                           #theme_bw() couldn't alter outer grid
+  theme(plot.background=element_rect(fill="white"),   #make figure background white
+        panel.grid.major=element_line(colour="white"),#make figure grid lines white
+        axis.line.x=element_line(colour="black"),     #set outer x-axis line colour  
+        axis.line.y=element_line(colour="black")) +   #set outer y-axis line colour 
+#  theme(plot.margin = margin(0.75, 2, 0, 0.5, "cm")) +#T, R, B, L (plot margins)
+  theme(legend.position="bottom") +                   #set legend to the bottom
+  guides(linetype=FALSE) +                            #get rid of line legend omfg
+#Generate labels:    
+  labs(x=NULL,                                        #no x-axis label here
+       y=expression(atop(CO[2]~flux~(mg~C~m^{-2}~d^{-1})))) +
+       #formulate y-axis label expression
+ theme(axis.title.y=element_text(vjust =-7))         #move y-axis title closer right
+
+print(easy_plote_co2_nopreds)
+```
+```{r Generating Figures: Easy Way Plot F, include=FALSE}
+#Plot f: i.) just c02 flux mean values ii.) predators 
+easy_plotf_co2_preds=treatment_totals_long %>%  
+  filter(predator=="Predator Present") %>%                             
+#Generate the plot:  
+  ggplot() +
+  geom_point(aes(x=temperature, y=co2_flux, shape=factor(nutrient_case)), size=3) +     
+  geom_errorbar(aes(x=temperature, y=co2_flux,  #SE based on grouped conditions
+                ymin=co2_flux-se_co2, ymax=co2_flux+se_co2,
+                group=interaction(treatment, nutrient_case)), width=0.03, guide=NULL) +
+  geom_line(aes(x=temperature, y=co2_flux, group=factor(nutrient_case), 
+                linetype=factor(nutrient_case)), colour="black", guide=NULL) +
+  scale_y_continuous(breaks=seq(-100, 50, by=50), #define y-axis line segments
+                   limits=c(-110, 50)) +          #define y-axis                   
+  scale_shape_manual(name="",                     #remove line legend title
+                    values=c(19, 1),              #only way to keep lines w/o legend
+                    labels=c("No Nutrients", "Nutrients")) +
+  geom_hline(yintercept=0, linetype="longdash") + #add co2 influx/efflux line
+#Plot aesthetics:
+  theme_minimal() +                           #theme_bw() couldn't alter outer grid
+  theme(plot.background=element_rect(fill="white"),   #make figure background white
+        panel.grid.major=element_line(colour="white"),#make figure grid lines white
+        axis.line.x=element_line(colour="black"),     #set outer x-axis line colour  
+        axis.line.y=element_line(colour="black")) +   #set outer y-axis line colour 
+#  theme(plot.margin = margin(0.75, 2, 0, 0.5, "cm")) +#T, R, B, L (plot margins)
+  theme(legend.position="bottom") +                   #set legend to the bottom
+  guides(linetype=FALSE) +                            #get rid of line legend omfg
+#Generate labels:    
+  labs(x=NULL, y=NULL)                                        #no x-axis label here
+#       y=expression(atop(CO[2]~flux,(mg~C~m^{-2}~d^{-1}))))
+    #formulate y-axis label expression, add the common back where you want the break
+print(easy_plotf_co2_preds)
+```
+ 
+So. Since I am a *fraud* and could not for the life of me perfect the merging of these plots in a more humane and logical manner, I had to cheat and merge them in groups of two to preserve the overall plot readability size. I also could not get the outter black border to cease to exist, due to no fault of `patchwork()` or `cowplot()` or `ggpubr` from a package that I forget, but I don't know. The fact that different functions can alter these plots, but by altering the margins is the only way to remove them means it *must* be something with how they are getting lined up. But after an embarrassing amount of time, it is sadly time to move on. 
+
+```{r Merge Easy Plots AB, include}
+easy_plot_ab=                                         #create new object
+  easy_plota_con_nopreds+easy_plotb_con_preds +       #here adding, but '|' could work
+    plot_layout(guides="collect") +                   #merge legends
+    plot_annotation(tag_levels=c('a','b')) &          #symbol applies to all plots
+  theme(
+    legend.position="top",                            #move legend to the top
+    legend.direction="vertical",                      #make points show up and down 
+    legend.justification="right",                     #move legend to the right
+    panel.border=element_blank())                     #remove extra grid lines
+
+print(easy_plot_ab)
+```
+```{r Merge Easy Plots CD, include}
+easy_plot_cd=                                         #create new object
+  easy_plotc_prim_nopreds+easy_plotd_prim_preds +     #here adding, but '|' could work
+    plot_layout(guides="collect") +                   #merge legends
+    plot_annotation(tag_levels=list(c('c','d'))) &    #symbol applies to all plots
+  theme(legend.position="none",                       #remove legends from plot
+    panel.border=element_blank(),                     #remove extra grid lines
+    plot.margin=margin(1.75, 0.20, 0.20, 0.20, "cm"))#make size match first row
+  
+print(easy_plot_cd)
+```
+```{r Merge Easy Plots EF, include}
+easy_plot_ef=                                         #create new object
+  easy_plote_co2_nopreds+easy_plotf_co2_preds +       #here adding, but '|' could work
+    plot_layout(guides="collect") +                   #merge legends
+    plot_annotation(tag_levels=list(c('e','f'))) &    #symbol applies to all plots
+  theme(legend.position="none",                       #remove legends from plot
+    panel.border=element_blank(),                     #remove extra grid lines
+    plot.margin=margin(1.75, 0.20, 0.20, 0.20, "cm"))#make size match first row
+  
+print(easy_plot_ef)
+```
 
 
 
